@@ -3,7 +3,7 @@
  *
  * WebSocket-based matchmaking (unchanged) + Solana transaction submission.
  * Card plays go as plaintext to PER endpoint — TEE shields privacy.
- * No client-side encryption needed (unlike the old FHE approach).
+ * No client-side encryption needed — TEE handles privacy.
  */
 
 import { PublicKey, Transaction } from '@solana/web3.js';
@@ -167,7 +167,7 @@ export class GameConnection {
 
   /**
    * Play card. In Solana mode, sends plaintext card to PER (TEE protects privacy).
-   * No encryption needed — this is the key simplification over FHE.
+   * No encryption needed — TEE protects privacy.
    */
   async playCard(card: CardType | null): Promise<void> {
     if (this._solanaMode && this._matchPda) {

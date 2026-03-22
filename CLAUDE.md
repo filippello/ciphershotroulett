@@ -22,12 +22,12 @@ Listens on `0.0.0.0:3000`. External port: 9000 (devcontainer Docker mapping).
 - **Server**: Dual-mode — legacy (in-memory engine) or Solana (account subscription relay)
 - **Config**: Set `CIPHERSHOT_PROGRAM_ID`, `SOLANA_RPC_URL`, `PER_ENDPOINT` env vars for Solana mode
 
-## Privacy via TEE (not FHE)
+## Privacy via TEE
 Card plays are sent as **plaintext** to the PER endpoint. The Intel TDX Trusted Execution Environment
 shields data from opponents and node operators — no client-side encryption needed.
 - Chamber order: plaintext inside TEE, never leaves enclave
 - Card plays: plaintext to PER, TEE shields from opponent
-- Resolution: normal Rust if/match inside TEE (10-50ms vs multi-second FHE)
+- Resolution: normal Rust if/match inside TEE (~10-50ms)
 - Results: TEE writes directly to public account (no separate finalize/decrypt step)
 
 ## Solana Mode

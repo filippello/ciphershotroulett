@@ -27,7 +27,7 @@ Cards are revealed after a 3...2...1 countdown. The game ends when someone gets 
 
 - **Chamber order** — shuffled inside TEE at match creation, never leaves the enclave
 - **Card plays** — sent as plaintext to the ER endpoint, TEE shields them from the opponent
-- **Shot resolution** — normal Rust `if`/`match` logic inside TEE (instant, no FHE overhead)
+- **Shot resolution** — normal Rust `if`/`match` logic inside TEE (instant)
 - **Results** — TEE writes resolved round data to a public account; only outcomes are visible
 
 When the game ends, accounts are undelegated back to L1 with sensitive data zeroed out. The match result lives on-chain permanently.
@@ -157,23 +157,6 @@ cd programs/ciphershot
 anchor build
 anchor deploy --provider.cluster devnet
 ```
-
----
-
-## Privacy Model: TEE, Not FHE
-
-CipherShot deliberately uses **hardware-based privacy** (Intel TDX TEE inside MagicBlock ER) instead of Fully Homomorphic Encryption:
-
-| | TEE (MagicBlock ER) | FHE |
-|--|---------------------|-----|
-| **Latency** | ~10–50ms per instruction | Multi-second per operation |
-| **Logic** | Normal Rust code | Specialized FHE circuits |
-| **Client complexity** | Send plaintext to ER | Encrypt inputs client-side |
-| **Trust model** | Hardware enclave isolation | Cryptographic guarantee |
-
-The tradeoff is clear: TEE trusts hardware isolation rather than pure cryptography, but delivers real-time gameplay that FHE cannot match. For a game where sub-second resolution matters, this is the right call.
-
-**Zero-on-undelegate**: When accounts return to L1, the `undelegate_match` instruction zeros out chamber data and card counts. Only the match outcome (winner, round results) persists publicly.
 
 ---
 
