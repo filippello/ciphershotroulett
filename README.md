@@ -4,8 +4,6 @@
 
 Two players. One shotgun. Seven rounds. Bluff or redirect — but the chamber order is hidden inside a TEE. Nobody sees it until the trigger is pulled.
 
-**[Play Live](https://ciphershot.vercel.app)**
-
 ---
 
 ## How It Works
