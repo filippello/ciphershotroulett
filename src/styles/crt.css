@@ -1,0 +1,305 @@
+/* ═══════════════════════════════════════════════
+   CRT / Arcade / Balatro-style visual effects
+   ═══════════════════════════════════════════════ */
+
+/* ── Google Font import ── */
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+/* ── Base reset ── */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100vh;
+  overflow: hidden;
+}
+
+body {
+  background: #0a0a12;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-family: 'Press Start 2P', monospace;
+  image-rendering: pixelated;
+}
+
+/* ── CRT Screen wrapper ── */
+#root {
+  position: relative;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Scanline overlay */
+#root::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.15) 2px,
+    rgba(0, 0, 0, 0.15) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Vignette + slight curvature illusion */
+#root::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 60%,
+    rgba(0, 0, 0, 0.6) 100%
+  );
+  pointer-events: none;
+  z-index: 9998;
+}
+
+/* ── CRT flicker animation (subtle) ── */
+@keyframes crt-flicker {
+  0%   { opacity: 1; }
+  92%  { opacity: 1; }
+  93%  { opacity: 0.96; }
+  94%  { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+#root > * {
+  animation: crt-flicker 8s infinite;
+}
+
+/* ── Glow text utility ── */
+.text-glow-red {
+  text-shadow:
+    0 0 7px #ff4444,
+    0 0 20px #ff444466,
+    0 0 40px #ff444433;
+}
+
+.text-glow-green {
+  text-shadow:
+    0 0 7px #88cc88,
+    0 0 20px #88cc8866;
+}
+
+.text-glow-yellow {
+  text-shadow:
+    0 0 7px #ffcc44,
+    0 0 20px #ffcc4466;
+}
+
+.text-glow-purple {
+  text-shadow:
+    0 0 7px #cc88cc,
+    0 0 20px #cc88cc66;
+}
+
+/* ── Arcade button base ── */
+.arcade-btn {
+  font-family: 'Press Start 2P', monospace;
+  cursor: pointer;
+  border: 3px solid;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  position: relative;
+  transition: all 0.1s ease;
+  box-shadow:
+    0 4px 0 rgba(0, 0, 0, 0.5),
+    0 0 15px rgba(0, 0, 0, 0.3);
+  image-rendering: pixelated;
+}
+
+.arcade-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 5px 0 rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(0, 0, 0, 0.3);
+  filter: brightness(1.2);
+}
+
+.arcade-btn:active:not(:disabled) {
+  transform: translateY(3px);
+  box-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.5),
+    0 0 10px rgba(0, 0, 0, 0.3);
+}
+
+.arcade-btn:disabled {
+  cursor: default;
+  opacity: 0.4;
+  filter: grayscale(0.5);
+}
+
+/* Green variant */
+.arcade-btn-green {
+  background: linear-gradient(180deg, #1a3e1a, #1a2e1a);
+  color: #88cc88;
+  border-color: #3a6e3a;
+  box-shadow:
+    0 4px 0 #0a1a0a,
+    0 0 15px rgba(136, 204, 136, 0.15);
+}
+
+.arcade-btn-green:hover:not(:disabled) {
+  box-shadow:
+    0 5px 0 #0a1a0a,
+    0 0 25px rgba(136, 204, 136, 0.3);
+}
+
+/* Red variant */
+.arcade-btn-red {
+  background: linear-gradient(180deg, #3e1a1a, #2e1a1a);
+  color: #ff6666;
+  border-color: #6e3a3a;
+  box-shadow:
+    0 4px 0 #1a0a0a,
+    0 0 15px rgba(255, 68, 68, 0.15);
+}
+
+.arcade-btn-red:hover:not(:disabled) {
+  box-shadow:
+    0 5px 0 #1a0a0a,
+    0 0 25px rgba(255, 68, 68, 0.3);
+}
+
+/* Purple variant */
+.arcade-btn-purple {
+  background: linear-gradient(180deg, #2e1a2e, #251a25);
+  color: #cc88cc;
+  border-color: #5e3a5e;
+  box-shadow:
+    0 4px 0 #1a0a1a,
+    0 0 15px rgba(204, 136, 204, 0.15);
+}
+
+.arcade-btn-purple:hover:not(:disabled) {
+  box-shadow:
+    0 5px 0 #1a0a1a,
+    0 0 25px rgba(204, 136, 204, 0.3);
+}
+
+/* Neutral variant */
+.arcade-btn-neutral {
+  background: linear-gradient(180deg, #2a2a3e, #1a1a2e);
+  color: #8888aa;
+  border-color: #3a3a5e;
+  box-shadow:
+    0 4px 0 #0a0a16,
+    0 0 15px rgba(136, 136, 170, 0.1);
+}
+
+.arcade-btn-neutral:hover:not(:disabled) {
+  box-shadow:
+    0 5px 0 #0a0a16,
+    0 0 25px rgba(136, 136, 170, 0.2);
+}
+
+/* ── Card styling ── */
+.card-frame {
+  border: 2px solid #3a3a5e;
+  border-radius: 4px;
+  overflow: hidden;
+  transition: all 0.15s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.card-frame:not(.card-used):hover {
+  border-color: #ffcc44;
+  box-shadow:
+    0 0 12px rgba(255, 204, 68, 0.3),
+    0 4px 12px rgba(0, 0, 0, 0.4);
+  transform: translateY(-2px);
+}
+
+.card-used {
+  opacity: 0.15;
+  filter: grayscale(1);
+  border-color: #222233;
+}
+
+/* ── Panel / box styling (Balatro card-table look) ── */
+.crt-panel {
+  background: linear-gradient(180deg, #0d0d1a, #0a0a16);
+  border: 2px solid #2a2a3e;
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.crt-box {
+  background: linear-gradient(180deg, #0c0c18, #08081a);
+  border: 2px solid #1a1a2e;
+  border-radius: 6px;
+  padding: 14px;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* ── Scrollbar styling ── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a12;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2a3e;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a5e;
+}
+
+/* ── Title with chromatic aberration ── */
+.crt-title {
+  position: relative;
+  color: #ff4444;
+  text-shadow:
+    -2px 0 #ff000066,
+    2px 0 #0044ff44,
+    0 0 20px #ff444466,
+    0 0 40px #ff444433;
+}
+
+/* ── Pulse animation ── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes countPop {
+  0% { transform: scale(2); opacity: 0; }
+  30% { transform: scale(0.9); opacity: 1; }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes cardReveal {
+  0% { transform: scale(0.3) rotateY(90deg); opacity: 0; }
+  50% { transform: scale(1.1) rotateY(0deg); opacity: 1; }
+  100% { transform: scale(1) rotateY(0deg); opacity: 1; }
+}
+
+/* ── HUD bar styling ── */
+.hud-bar {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 8px;
+  background: linear-gradient(180deg, #0d0d1a, #0a0a16);
+  border-bottom: 2px solid #2a2a3e;
+  padding: 6px 16px;
+  letter-spacing: 0.5px;
+}

@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.vite/
+.next/
+*.log
+.DS_Store
+*.local
+.env
+.env.*
+coverage/
+*.tsbuildinfo
+.claude-memory-backup/
+.vercel
+
+# Solana / Anchor artifacts
+programs/ciphershot/target/
+target/
+.anchor/
+keypair.json
+test-ledger/
