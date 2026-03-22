@@ -1,7 +1,8 @@
 import { WebSocket } from 'ws';
 import type { GameState, Target, CardType, Player } from '../src/game/core/types.js';
 import { createInitialState, selectTarget, playCard, getResponder } from '../src/game/core/engine.js';
-import { createMatchOnChain, subscribeToMatch } from './solanaListener.js';
+import { createMatchOnChain, subscribeToMatch, delegateMatchAccounts, undelegateMatchAccounts, unsubscribeFromMatch, topUpEphemeralBalance } from './solanaListener.js';
+import { PublicKey } from '@solana/web3.js';
 
 export interface MatchRecord {
   matchId: string;
@@ -41,7 +42,7 @@ export function createMatch(matchId: string, playerA: string, playerB: string): 
 
 export async function createSolanaMatch(matchId: string, playerA: string, playerB: string): Promise<MatchRecord> {
 
-  // Create the match on-chain
+  // Create the match on-chain (always on L1)
   const result = await createMatchOnChain(playerA, playerB);
 
   // Initial state — real state comes from on-chain subscription
@@ -60,11 +61,36 @@ export async function createSolanaMatch(matchId: string, playerA: string, player
   };
   matches.set(matchId, record);
 
-  // Subscribe to on-chain state changes
   if (result) {
-    subscribeToMatch(result.matchPda, playerA, playerB, (update) => {
+    // Delegate accounts to PER (if PER_ENDPOINT is configured)
+    const matchPda = new PublicKey(result.matchPda);
+    const playerAPubkey = new PublicKey(playerA);
+    const playerBPubkey = new PublicKey(playerB);
+
+    await delegateMatchAccounts(matchPda, result.matchId, playerAPubkey, playerBPubkey);
+
+    // Top up ephemeral balance for both players so they can pay ER tx fees
+    await Promise.all([
+      topUpEphemeralBalance(playerAPubkey),
+      topUpEphemeralBalance(playerBPubkey),
+    ]);
+
+    // Subscribe to on-chain state changes (uses PER connection if available)
+    subscribeToMatch(result.matchPda, playerA, playerB, async (update) => {
       record.gameState = update.gameState;
-      if (update.gameState.phase === 'gameOver') record.status = 'finished';
+
+      if (update.gameState.phase === 'gameOver') {
+        record.status = 'finished';
+
+        // Undelegate accounts back to L1 (sent to ER endpoint)
+        try {
+          await undelegateMatchAccounts(matchPda, playerAPubkey, playerBPubkey);
+        } catch (err) {
+          console.error(`[Solana] Failed to undelegate match ${matchId}:`, err);
+        }
+        unsubscribeFromMatch(result.matchPda);
+      }
+
       broadcastState(record);
     });
   }

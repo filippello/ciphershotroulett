@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use ephemeral_rollups_sdk::anchor::ephemeral;
 
 pub mod instructions;
 pub mod state;
@@ -8,6 +9,7 @@ use instructions::*;
 
 declare_id!("DMg6pfojshfqeUBbhwPKsTVbFFoppVm2QrctF1WfzXWn");
 
+#[ephemeral]
 #[program]
 pub mod ciphershot {
     use super::*;
@@ -28,5 +30,21 @@ pub mod ciphershot {
     /// Automatically resolves the shot.
     pub fn play_card(ctx: Context<PlayCard>, card: u8) -> Result<()> {
         instructions::play_card::handler(ctx, card)
+    }
+
+    /// Delegate batch A: match_config, chamber, player_a_cards
+    pub fn delegate_match_a(ctx: Context<DelegateMatchA>, match_id: [u8; 32], player_a: Pubkey) -> Result<()> {
+        instructions::delegate_match::handler_a(ctx, match_id, player_a)
+    }
+
+    /// Delegate batch B: player_b_cards, pending_action, round_results
+    pub fn delegate_match_b(ctx: Context<DelegateMatchB>, match_key: Pubkey, player_b: Pubkey) -> Result<()> {
+        instructions::delegate_match::handler_b(ctx, match_key, player_b)
+    }
+
+    /// Undelegate all match accounts back to L1.
+    /// Zeros sensitive data before undelegation. Must be sent to ER endpoint.
+    pub fn undelegate_match(ctx: Context<UndelegateMatch>) -> Result<()> {
+        instructions::undelegate_match::handler(ctx)
     }
 }

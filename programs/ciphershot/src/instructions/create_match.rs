@@ -58,6 +58,16 @@ pub struct CreateMatch<'info> {
     )]
     pub pending_action: Account<'info, PendingAction>,
 
+    // Single account for all round results (avoids stack overflow and ER init issues)
+    #[account(
+        init,
+        payer = payer,
+        space = RoundResults::SIZE,
+        seeds = [b"results", match_config.key().as_ref()],
+        bump,
+    )]
+    pub round_results: Box<Account<'info, RoundResults>>,
+
     pub system_program: Program<'info, System>,
 }
 

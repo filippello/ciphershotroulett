@@ -100,7 +100,7 @@ export async function chooseTargetOnChain(
   tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
   const signed = await wallet.signTransaction(tx);
-  const sig = await connection.sendRawTransaction(signed.serialize());
+  const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
   await connection.confirmTransaction(sig, 'confirmed');
 
   return sig;
@@ -122,7 +122,11 @@ export async function playCardOnChain(
   const [chamberPda] = getChamberPda(matchPda);
   const [responderCardsPda] = getPlayerCardsPda(matchPda, wallet.publicKey);
   const [pendingActionPda] = getPendingActionPda(matchPda);
-  const [roundResultPda] = getRoundResultPda(matchPda, matchConfig.currentShotIndex);
+  // Single RoundResults account (all results stored in one PDA)
+  const [roundResultsPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('results'), matchPda.toBuffer()],
+    PROGRAM_ID,
+  );
 
   // Anchor discriminator for "play_card" = sha256("global:play_card")[0..8]
   const discriminator = Buffer.from([63, 150, 161, 24, 68, 231, 108, 9]); // from IDL
@@ -131,13 +135,12 @@ export async function playCardOnChain(
   const ix = {
     programId: PROGRAM_ID,
     keys: [
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+      { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
       { pubkey: matchPda, isSigner: false, isWritable: true },
       { pubkey: chamberPda, isSigner: false, isWritable: true },
       { pubkey: responderCardsPda, isSigner: false, isWritable: true },
       { pubkey: pendingActionPda, isSigner: false, isWritable: true },
-      { pubkey: roundResultPda, isSigner: false, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: roundResultsPda, isSigner: false, isWritable: true },
     ],
     data,
   };
@@ -147,7 +150,7 @@ export async function playCardOnChain(
   tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
   const signed = await wallet.signTransaction(tx);
-  const sig = await connection.sendRawTransaction(signed.serialize());
+  const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
   await connection.confirmTransaction(sig, 'confirmed');
 
   return sig;

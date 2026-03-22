@@ -1,6 +1,8 @@
 # CipherShot
 
-A two-player turn-based duel of bluffs and bullets. Players take turns shooting each other through a randomized shotgun chamber while playing cards to bluff or redirect shots.
+**On-chain Russian Roulette with private game state via MagicBlock Ephemeral Rollups.**
+
+Two players. One shotgun. Seven rounds. Bluff or redirect — but the chamber order is hidden inside a TEE. Nobody sees it until the trigger is pulled.
 
 **[Play Live](https://ciphershot.vercel.app)**
 
@@ -15,7 +17,61 @@ A shotgun is loaded with **7 rounds** in random order: 3 live, 4 blank. Players 
 | **Bluff** | x3 | Does nothing — a decoy to confuse your opponent |
 | **Redirect** | x2 | Reverses the shot back at the shooter |
 
-Cards are revealed after a 3...2...1 countdown. Your opponent won't know what you played until then. The game ends when someone gets hit by a live round.
+Cards are revealed after a 3...2...1 countdown. The game ends when someone gets hit by a live round.
+
+---
+
+## Why Ephemeral Rollups
+
+**The problem**: On-chain games need hidden state (chamber order, card plays), but Solana accounts are public. Traditional approaches use commit-reveal schemes or client-side encryption, adding latency and complexity.
+
+**The ER solution**: MagicBlock Ephemeral Rollups run inside an Intel TDX Trusted Execution Environment. Game accounts are *delegated* from Solana L1 into the ER, where they become private:
+
+- **Chamber order** — shuffled inside TEE at match creation, never leaves the enclave
+- **Card plays** — sent as plaintext to the ER endpoint, TEE shields them from the opponent
+- **Shot resolution** — normal Rust `if`/`match` logic inside TEE (instant, no FHE overhead)
+- **Results** — TEE writes resolved round data to a public account; only outcomes are visible
+
+When the game ends, accounts are undelegated back to L1 with sensitive data zeroed out. The match result lives on-chain permanently.
+
+---
+
+## Architecture
+
+```
+┌──────────────┐         ┌───────────────────────────────────┐
+│  Solana L1   │         │  MagicBlock Ephemeral Rollup      │
+│              │         │  (Intel TDX TEE)                  │
+│  create_match│         │                                   │
+│  init PDAs   │────────>│  delegate_match_a / _b            │
+│              │  deleg  │     ↓                             │
+│              │         │  create_match (shuffle chamber)   │
+│              │         │  choose_target ──┐                │
+│              │         │  play_card ──────┤ game loop      │
+│              │         │  (resolve shot)──┘                │
+│              │         │     ↓                             │
+│              │<────────│  undelegate_match                 │
+│  match result│  undeleg│  (zero chamber/cards, return)     │
+│  on-chain    │         │                                   │
+└──────────────┘         └───────────────────────────────────┘
+```
+
+---
+
+## On-Chain Proof
+
+- **Program ID**: [`DMg6pfojshfqeUBbhwPKsTVbFFoppVm2QrctF1WfzXWn`](https://solscan.io/account/DMg6pfojshfqeUBbhwPKsTVbFFoppVm2QrctF1WfzXWn?cluster=devnet)
+- **Network**: Solana Devnet + MagicBlock ER
+- **Payer Wallet**: [`FJASGessZXm5n3DWvcNEMxkbwi7wvx8XjezY5xoXsAMD`](https://solscan.io/account/FJASGessZXm5n3DWvcNEMxkbwi7wvx8XjezY5xoXsAMD?cluster=devnet)
+- **Total Confirmed Transactions**: 20
+
+### Example Transactions
+
+| Type | Signature | What it proves |
+|------|-----------|----------------|
+| **CreateMatch** | [`2kAyL1y...hfQPe`](https://solscan.io/tx/2kAyL1yHsXpwpMKF6kS7NWFTqzPSEg46eCxb8wSpe3fxeZrm963kcrF6ksABHmtbtaVUSdFzKnrkpRVHfhjhfQPe?cluster=devnet) | Initializes 5 PDAs via SystemProgram — match, chambers, hands |
+| **DelegateMatch** | [`35k86ua...vue3k`](https://solscan.io/tx/35k86uaKGqhDKukdtQsSrTxad18ox78xabQ2fdcGdoZC3Gg9bSayH8VptjcWzco5YmgYdULe75yDc8GMcAHvue3k?cluster=devnet) | Batch-delegates 20+ accounts to MagicBlock Ephemeral Rollup |
+| **Game via ER** | [`4ApBWsT...2Zcm`](https://solscan.io/tx/4ApBWsTsP4tw3APDKreBJri9ZCFo3v6CcAoF2nuZGsJ8cm574ZRLTLABkcvabKsPa2xxSVY28hvGVcoeNbYX2Zcm?cluster=devnet) | Gameplay instruction routed through delegation program (`DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`) |
 
 ---
 
@@ -24,84 +80,46 @@ Cards are revealed after a 3...2...1 countdown. Your opponent won't know what yo
 | Layer | Tech |
 |-------|------|
 | Client | Vite + React + TypeScript |
-| Game Rendering | Phaser 3 (960x540 canvas) |
+| Game Rendering | Phaser 3 (960×540 canvas) |
 | State Management | Zustand |
-| Server | Node.js WebSocket (real-time sync) |
-| Wallet | viem (Ethereum wallet connect) |
-| Styling | CRT/arcade aesthetic with Press Start 2P font |
+| Blockchain | Solana (Anchor framework) |
+| Privacy | MagicBlock `ephemeral-rollups-sdk` (TEE) |
+| Server | Node.js WebSocket (real-time relay) |
+| Styling | CRT/arcade aesthetic, Press Start 2P font |
 
 ---
 
-## Architecture
+## Program Architecture
 
-```
-src/
-├── game/
-│   ├── core/           # Pure game logic (no rendering)
-│   │   ├── engine.ts   # State machine & transitions
-│   │   ├── types.ts    # GameState, Card, ShotResult
-│   │   ├── chamber.ts  # Shuffle 7 rounds (3 live, 4 blank)
-│   │   ├── cards.ts    # Generate 5 cards per player
-│   │   └── resolver.ts # Shot resolution logic
-│   ├── phaser/         # Phaser scenes & rendering
-│   │   ├── GameScene.ts
-│   │   └── config.ts
-│   ├── adapters/       # Game engine adapters
-│   └── store.ts        # Zustand store with animation buffering
-├── components/         # React UI overlays
-│   ├── GameScreen.tsx          # Main game view + Phaser integration
-│   ├── TargetingOverlay.tsx    # Crosshair target selection
-│   ├── CardSelectOverlay.tsx   # Card hand fan selection
-│   ├── SuspenseOverlay.tsx     # 3-2-1 countdown reveal
-│   ├── MatchmakingLobby.tsx    # Queue + Tutorial
-│   ├── WalletConnect.tsx       # Wallet connection screen
-│   ├── ResultBanner.tsx        # Victory/Defeat screen
-│   └── ...
-├── lib/                # Wallet, matchmaking, audio utilities
-└── styles/             # CRT effects, arcade button styles
+### Instructions
 
-server/
-├── index.ts            # WebSocket server (port 3001)
-├── matchmaking.ts      # Queue pairing logic
-└── matchStore.ts       # Match state + broadcast
-```
+| Instruction | Purpose |
+|-------------|---------|
+| `create_match` | Init PDAs: MatchConfig, Chamber (Fisher-Yates shuffle), PlayerCards (×2), PendingAction, RoundResults |
+| `delegate_match_a` | Delegate batch A to ER: match_config, chamber, player_a_cards |
+| `delegate_match_b` | Delegate batch B to ER: player_b_cards, pending_action, round_results |
+| `choose_target` | Shooter picks target (0 = self, 1 = opponent) |
+| `play_card` | Defender plays card (0 = pass, 1 = bluff, 2 = redirect) → auto-resolves shot |
+| `undelegate_match` | Zero sensitive data, return all accounts to L1 |
 
-**Key design decisions:**
-- `game/core/` is pure logic with zero rendering dependencies — fully testable
-- Phaser handles sprites and animations; React handles UI overlays on top
-- Animation buffering in the Zustand store keeps old state on screen while animations play, then flushes the real state when done
+### Account Structs
+
+| Account | PDA Seeds | Privacy | Contents |
+|---------|-----------|---------|----------|
+| `MatchConfig` | `["match", match_id]` | Public | Players, phase, shooter, alive status, winner |
+| `Chamber` | `["chamber", match_config]` | Shielded in ER | 7 rounds: `[u8; 7]` (1 = live, 0 = blank) |
+| `PlayerCards` | `["cards", match_config, player]` | Shielded in ER | Owner, bluff count, redirect count |
+| `PendingAction` | `["action", match_config]` | Shielded in ER | Card played this turn |
+| `RoundResults` | `["results", match_config]` | Public after resolution | All round outcomes (shooter, target, killed, card, index) |
 
 ---
 
-## Game Flow
-
-```
-┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
-│  Connect    │────>│  Matchmaking     │────>│  Game        │
-│  Wallet     │     │  Queue + Tutorial│     │  Screen      │
-└─────────────┘     └──────────────────┘     └──────┬───────┘
-                                                     │
-                                    ┌────────────────┼────────────────┐
-                                    v                v                v
-                              Choose Target    Respond Card     Shot Resolves
-                              (click player)   (pick from hand) (3-2-1 reveal)
-                                    │                │                │
-                                    └────────────────┴────────────────┘
-                                                     │
-                                              ┌──────v───────┐
-                                              │  Game Over   │
-                                              │  Victory or  │
-                                              │  Defeat      │
-                                              └──────────────┘
-```
-
----
-
-## Getting Started
+## How to Run
 
 ### Prerequisites
 - Node.js 18+
-- npm
+- Rust + Anchor CLI (for program development)
+- Solana CLI
 
 ### Install & Run
 
@@ -114,101 +132,50 @@ This starts both:
 - **Client** on `http://localhost:3000` (Vite)
 - **Server** on `ws://localhost:3001` (WebSocket)
 
-### Build
+### Environment Variables
+
+**Client** (prefix with `VITE_`):
+```
+VITE_CIPHERSHOT_PROGRAM_ID=DMg6pfojshfqeUBbhwPKsTVbFFoppVm2QrctF1WfzXWn
+VITE_SOLANA_RPC_URL=https://api.devnet.solana.com
+VITE_PER_ENDPOINT=<MagicBlock ER URL>
+VITE_WS_URL=ws://localhost:3001
+```
+
+**Server**:
+```
+CIPHERSHOT_PROGRAM_ID=DMg6pfojshfqeUBbhwPKsTVbFFoppVm2QrctF1WfzXWn
+SOLANA_RPC_URL=https://api.devnet.solana.com
+PER_ENDPOINT=<MagicBlock ER URL>
+PORT=3001
+```
+
+When `CIPHERSHOT_PROGRAM_ID` is set, the server runs in Solana mode. Without it, the game falls back to legacy in-memory mode.
+
+### Build the Program
 
 ```bash
-npm run build
-```
-
-### Individual Commands
-
-```bash
-npm run dev:client   # Vite dev server only
-npm run dev:server   # WebSocket server only
+cd programs/ciphershot
+anchor build
+anchor deploy --provider.cluster devnet
 ```
 
 ---
 
-## Visual Style
+## Privacy Model: TEE, Not FHE
 
-The UI uses a **Balatro-inspired CRT/arcade aesthetic**:
+CipherShot deliberately uses **hardware-based privacy** (Intel TDX TEE inside MagicBlock ER) instead of Fully Homomorphic Encryption:
 
-- **Press Start 2P** pixel font throughout
-- CRT scanline overlay + vignette + subtle flicker
-- Chromatic aberration on titles
-- Arcade-style buttons with 3D press effect
-- Red crosshair cursor during target selection
-- Neon glow effects on text and card hover
-- Card fan layout for hand selection
+| | TEE (MagicBlock ER) | FHE |
+|--|---------------------|-----|
+| **Latency** | ~10–50ms per instruction | Multi-second per operation |
+| **Logic** | Normal Rust code | Specialized FHE circuits |
+| **Client complexity** | Send plaintext to ER | Encrypt inputs client-side |
+| **Trust model** | Hardware enclave isolation | Cryptographic guarantee |
 
----
+The tradeoff is clear: TEE trusts hardware isolation rather than pure cryptography, but delivers real-time gameplay that FHE cannot match. For a game where sub-second resolution matters, this is the right call.
 
-## Game Mechanics Detail
-
-### Chamber
-7 rounds shuffled randomly each game. Neither player knows the order.
-
-### Turn Structure
-1. **Shooter picks target** — Click on yourself or your opponent in the game scene
-2. **Defender plays a card** — Select from your hand (fan layout)
-3. **Reveal** — 3...2...1 countdown, card is shown
-4. **Resolution** — Shot fires. Live round + final target = kill
-
-### Cards
-Each player starts with 5 cards (3 Bluff, 2 Redirect). Once used, they're gone. The psychological game: your opponent can't tell if you played a Bluff or a Redirect until the reveal.
-
-### Win Condition
-Survive while your opponent doesn't. That's all.
-
----
-
-## Zama fhEVM Integration
-
-CipherShot uses **Zama's fhEVM** to run the entire game logic with Fully Homomorphic Encryption on Ethereum Sepolia. The chamber order and card choices are encrypted on-chain — nobody (not even the server) can see them until the shot resolves.
-
-| Component | What it does |
-|-----------|-------------|
-| `CipherShotGame.sol` | Encrypted chamber shuffle (Fisher-Yates in FHE), encrypted card validation & consumption, FHE shot resolution |
-| `@zama-fhe/relayer-sdk` | Server-side `publicDecrypt()` of shot results after `FHE.makePubliclyDecryptable()` |
-| `relayer-sdk-js` (CDN) | Client-side encrypted input creation (`encryptCard`) and user decryption of own card counts |
-
-### FHE Game Flow
-
-```
-Shooter → chooseTarget(matchId, target)         [plaintext tx]
-Responder → playCard(matchId, encCard, proof)   [encrypted via fhevmjs]
-    ↓
-Contract resolves shot entirely in FHE domain:
-  - Is card a redirect? → flip target (encrypted)
-  - Is chamber round live? → killed (encrypted)
-  - FHE.makePubliclyDecryptable(results)
-    ↓
-Server calls publicDecrypt() via Relayer SDK → gets plaintext values
-Server calls finalizeRound() on-chain → RoundFinalized event
-    ↓
-Client receives state update → card reveal animation → shot fires
-```
-
-### Reference Transaction
-
-Full FHE game round on Sepolia (encrypted card submission + FHE resolution + public decryption + finalization):
-
-[`0xb59a32a04ceeeb0962ebaa89ef2a9a968198207204b6e60bf3ddf48b6f30aa0f`](https://sepolia.etherscan.io/tx/0xb59a32a04ceeeb0962ebaa89ef2a9a968198207204b6e60bf3ddf48b6f30aa0f#eventlog)
-
-### Contract
-
-- **Network**: Ethereum Sepolia (chain 11155111)
-- **Address**: [`0x843D7908AF8042199EA80f1883CD20e8d4211ba8`](https://sepolia.etherscan.io/address/0x843D7908AF8042199EA80f1883CD20e8d4211ba8)
-- **Source**: `chain/contracts/CipherShotGame.sol`
-
----
-
-## Roadmap
-
-- [x] Zama FHE integration for encrypted chamber/resolver logic
-- [x] On-chain game verification
-- [ ] Ranked matchmaking
-- [ ] Additional card types
+**Zero-on-undelegate**: When accounts return to L1, the `undelegate_match` instruction zeros out chamber data and card counts. Only the match outcome (winner, round results) persists publicly.
 
 ---
 

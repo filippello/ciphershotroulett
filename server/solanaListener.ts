@@ -6,7 +6,7 @@
  * Replaces the old Ethereum contractListener.ts.
  */
 
-import { Connection, PublicKey, Keypair, Transaction, SystemProgram, sendAndConfirmTransaction } from '@solana/web3.js';
+import { Connection, PublicKey, Keypair, Transaction, SystemProgram, sendAndConfirmTransaction, ComputeBudgetProgram } from '@solana/web3.js';
 import type { GameState, Player, Target, CardType, ShotResult, ShotType } from '../src/game/core/types.js';
 import { readFileSync } from 'fs';
 import { randomBytes } from 'crypto';
@@ -30,8 +30,19 @@ let perConnection: Connection | null = null;
 let serverKeypair: Keypair | null = null;
 const subscriptions = new Map<string, number>(); // matchPda -> subscriptionId
 
-// create_match discriminator from IDL
+// Anchor instruction discriminators (sha256("global:<name>")[0..8])
 const CREATE_MATCH_DISCRIMINATOR = Buffer.from([107, 2, 184, 145, 70, 142, 17, 165]);
+const DELEGATE_MATCH_A_DISCRIMINATOR = Buffer.from([185, 173, 74, 33, 238, 29, 138, 71]);
+const DELEGATE_MATCH_B_DISCRIMINATOR = Buffer.from([1, 45, 49, 218, 105, 174, 131, 94]);
+const UNDELEGATE_MATCH_DISCRIMINATOR = Buffer.from([142, 117, 126, 27, 242, 11, 103, 14]);
+
+// MagicBlock programs
+const DELEGATION_PROGRAM_ID = new PublicKey('DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh');
+const MAGIC_PROGRAM_ID = new PublicKey('Magic11111111111111111111111111111111111111');
+const MAGIC_CONTEXT_ID = new PublicKey('MagicContext1111111111111111111111111111111');
+
+// Delegation program's top_up_ephemeral_balance discriminator
+const TOP_UP_EPHEMERAL_BALANCE_DISCRIMINATOR = Buffer.from([9, 0, 0, 0, 0, 0, 0, 0]);
 
 export interface MatchStateUpdate {
   matchId: string;
@@ -51,7 +62,12 @@ export function initSolanaListener(): boolean {
 
   connection = new Connection(SOLANA_RPC_URL, 'confirmed');
   if (PER_ENDPOINT) {
-    perConnection = new Connection(PER_ENDPOINT, 'confirmed');
+    // MagicBlock ER needs explicit WebSocket endpoint for subscriptions
+    const wsEndpoint = PER_ENDPOINT.replace('https://', 'wss://').replace('http://', 'ws://');
+    perConnection = new Connection(PER_ENDPOINT, {
+      commitment: 'confirmed',
+      wsEndpoint,
+    });
   }
 
   // Load server keypair for signing match creation transactions
@@ -85,7 +101,8 @@ export async function createMatchOnChain(
     return null;
   }
 
-  const conn = perConnection || connection;
+  // create_match MUST go to L1 — accounts don't exist on ER yet
+  const conn = connection;
   const payer = serverKeypair;
 
   // Generate a unique 32-byte match_id
@@ -99,6 +116,12 @@ export async function createMatchOnChain(
   const [playerACardsPda] = getPlayerCardsPda(matchPda, playerAPubkey);
   const [playerBCardsPda] = getPlayerCardsPda(matchPda, playerBPubkey);
   const [pendingActionPda] = getPendingActionPda(matchPda);
+
+  // Derive RoundResults PDA (single account for all results)
+  const [roundResultsPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('results'), matchPda.toBuffer()],
+    PROGRAM_ID,
+  );
 
   // Build instruction data: discriminator(8) + match_id(32)
   const data = Buffer.concat([CREATE_MATCH_DISCRIMINATOR, matchId]);
@@ -114,6 +137,7 @@ export async function createMatchOnChain(
       { pubkey: playerACardsPda, isSigner: false, isWritable: true },
       { pubkey: playerBCardsPda, isSigner: false, isWritable: true },
       { pubkey: pendingActionPda, isSigner: false, isWritable: true },
+      { pubkey: roundResultsPda, isSigner: false, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     data,
@@ -176,9 +200,251 @@ export function getRoundResultPda(matchPda: PublicKey, shotIndex: number): [Publ
   );
 }
 
+// Delegation PDA helpers (derived from the delegation program)
+function getDelegationBufferPda(account: PublicKey): [PublicKey, number] {
+  // Buffer PDA is derived from the OWNER program (CipherShot), not the delegation program
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('buffer'), account.toBuffer()],
+    PROGRAM_ID,
+  );
+}
+
+function getDelegationRecordPda(account: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('delegation'), account.toBuffer()],
+    DELEGATION_PROGRAM_ID,
+  );
+}
+
+function getDelegationMetadataPda(account: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('delegation-metadata'), account.toBuffer()],
+    DELEGATION_PROGRAM_ID,
+  );
+}
+
+/**
+ * Build the accounts for a single "del" field in the #[delegate] macro expansion.
+ * For each del field X, the macro generates: buffer_X, delegation_record_X, delegation_metadata_X, X
+ */
+function buildDelFieldAccounts(pda: PublicKey): { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] {
+  const [buffer] = getDelegationBufferPda(pda);
+  const [record] = getDelegationRecordPda(pda);
+  const [metadata] = getDelegationMetadataPda(pda);
+  return [
+    { pubkey: buffer, isSigner: false, isWritable: true },
+    { pubkey: record, isSigner: false, isWritable: true },
+    { pubkey: metadata, isSigner: false, isWritable: true },
+    { pubkey: pda, isSigner: false, isWritable: true },
+  ];
+}
+
+/**
+ * Top up ephemeral balance for a player on the ER.
+ * This allows the player to pay tx fees on the Ephemeral Rollup.
+ */
+export async function topUpEphemeralBalance(
+  player: PublicKey,
+  lamports: number = 100_000_000, // 0.1 SOL
+): Promise<string | null> {
+  if (!connection || !serverKeypair) return null;
+
+  const payer = serverKeypair;
+  const index = 0;
+
+  // Ephemeral balance PDA: ["balance", player, index] @ DELEGATION_PROGRAM_ID
+  const [ephemeralBalancePda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('balance'), player.toBuffer(), Buffer.from([index])],
+    DELEGATION_PROGRAM_ID,
+  );
+
+  // Data: discriminator(8) + amount(u64 LE) + index(u8)
+  const data = Buffer.alloc(17);
+  TOP_UP_EPHEMERAL_BALANCE_DISCRIMINATOR.copy(data, 0);
+  data.writeBigUInt64LE(BigInt(lamports), 8);
+  data[16] = index;
+
+  const ix = {
+    programId: DELEGATION_PROGRAM_ID,
+    keys: [
+      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+      { pubkey: player, isSigner: false, isWritable: false },
+      { pubkey: ephemeralBalancePda, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  };
+
+  const tx = new Transaction().add(ix);
+
+  try {
+    const sig = await sendAndConfirmTransaction(connection, tx, [payer], { commitment: 'confirmed' });
+    console.log(`[Solana] Topped up ephemeral balance for ${player.toBase58().slice(0, 8)}...: ${sig.slice(0, 16)}...`);
+    return sig;
+  } catch (err: any) {
+    console.error('[Solana] top_up_ephemeral_balance failed:', err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * Delegate all match accounts to MagicBlock Ephemeral Rollups.
+ * Uses the #[delegate] macro from ephemeral-rollups-sdk.
+ *
+ * Account layout (expanded by macro):
+ *   payer
+ * Split into two txs (A + B) to avoid stack overflow (3 del fields each).
+ */
+export async function delegateMatchAccounts(
+  matchPda: PublicKey,
+  matchId: Buffer,
+  playerA: PublicKey,
+  playerB: PublicKey,
+): Promise<string | null> {
+  if (!connection || !serverKeypair) {
+    console.error('[Solana] Not initialized for delegation');
+    return null;
+  }
+
+  if (!PER_ENDPOINT) {
+    console.log('[Solana] PER_ENDPOINT not configured, skipping delegation');
+    return null;
+  }
+
+  const payer = serverKeypair;
+  const [chamberPda] = getChamberPda(matchPda);
+  const [playerACardsPda] = getPlayerCardsPda(matchPda, playerA);
+  const [playerBCardsPda] = getPlayerCardsPda(matchPda, playerB);
+  const [pendingActionPda] = getPendingActionPda(matchPda);
+  const [roundResultsPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('results'), matchPda.toBuffer()],
+    PROGRAM_ID,
+  );
+
+  // === Batch A: match_config, chamber, player_a_cards ===
+  const dataA = Buffer.concat([
+    DELEGATE_MATCH_A_DISCRIMINATOR,
+    matchId,              // match_id: [u8; 32]
+    playerA.toBuffer(),   // player_a: Pubkey
+  ]);
+
+  const ixA = {
+    programId: PROGRAM_ID,
+    keys: [
+      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+      ...buildDelFieldAccounts(matchPda),
+      ...buildDelFieldAccounts(chamberPda),
+      ...buildDelFieldAccounts(playerACardsPda),
+      { pubkey: PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: DELEGATION_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: dataA,
+  };
+
+  const txA = new Transaction()
+    .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }))
+    .add(ixA);
+
+  try {
+    const sigA = await sendAndConfirmTransaction(connection, txA, [payer], { commitment: 'confirmed' });
+    console.log(`[Solana] Batch A delegated: ${sigA.slice(0, 16)}...`);
+  } catch (err: any) {
+    if (err?.logs) console.error('[Solana] delegate_match_a logs:', err.logs);
+    console.error('[Solana] delegate_match_a failed:', err?.message || err);
+    return null;
+  }
+
+  // === Batch B: player_b_cards, pending_action, round_results ===
+  const dataB = Buffer.concat([
+    DELEGATE_MATCH_B_DISCRIMINATOR,
+    matchPda.toBuffer(),  // match_key: Pubkey
+    playerB.toBuffer(),   // player_b: Pubkey
+  ]);
+
+  const ixB = {
+    programId: PROGRAM_ID,
+    keys: [
+      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+      ...buildDelFieldAccounts(playerBCardsPda),
+      ...buildDelFieldAccounts(pendingActionPda),
+      ...buildDelFieldAccounts(roundResultsPda),
+      { pubkey: PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: DELEGATION_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: dataB,
+  };
+
+  const txB = new Transaction()
+    .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }))
+    .add(ixB);
+
+  try {
+    const sigB = await sendAndConfirmTransaction(connection, txB, [payer], { commitment: 'confirmed' });
+    console.log(`[Solana] Batch B delegated: ${sigB.slice(0, 16)}...`);
+    return sigB;
+  } catch (err: any) {
+    if (err?.logs) console.error('[Solana] delegate_match_b logs:', err.logs);
+    console.error('[Solana] delegate_match_b failed:', err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * Zero out sensitive match data via undelegate_match instruction.
+ * Sent to ER endpoint. Actual undelegation is handled by ER infrastructure.
+ */
+export async function undelegateMatchAccounts(
+  matchPda: PublicKey,
+  playerA: PublicKey,
+  playerB: PublicKey,
+): Promise<string | null> {
+  const conn = perConnection || connection;
+  if (!conn || !serverKeypair) {
+    console.error('[Solana] Not initialized for undelegation');
+    return null;
+  }
+
+  const payer = serverKeypair;
+  const [chamberPda] = getChamberPda(matchPda);
+  const [playerACardsPda] = getPlayerCardsPda(matchPda, playerA);
+  const [playerBCardsPda] = getPlayerCardsPda(matchPda, playerB);
+  const [pendingActionPda] = getPendingActionPda(matchPda);
+
+  const ix = {
+    programId: PROGRAM_ID,
+    keys: [
+      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+      { pubkey: matchPda, isSigner: false, isWritable: true },
+      { pubkey: chamberPda, isSigner: false, isWritable: true },
+      { pubkey: playerACardsPda, isSigner: false, isWritable: true },
+      { pubkey: playerBCardsPda, isSigner: false, isWritable: true },
+      { pubkey: pendingActionPda, isSigner: false, isWritable: true },
+      // Auto-added by #[commit] macro
+      { pubkey: MAGIC_CONTEXT_ID, isSigner: false, isWritable: true },
+      { pubkey: MAGIC_PROGRAM_ID, isSigner: false, isWritable: false },
+    ],
+    data: UNDELEGATE_MATCH_DISCRIMINATOR,
+  };
+
+  const tx = new Transaction().add(ix);
+
+  try {
+    const sig = await sendAndConfirmTransaction(conn, tx, [payer], { commitment: 'confirmed' });
+    console.log(`[Solana] Match data zeroed: ${sig.slice(0, 16)}...`);
+    return sig;
+  } catch (err) {
+    console.error('[Solana] undelegate_match tx failed:', err);
+    return null;
+  }
+}
+
+const pollingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+
 /**
  * Subscribe to a match's MatchConfig account changes.
- * Fetches RoundResult accounts to build shot history for animations.
+ * Uses WebSocket subscription + polling fallback for ER compatibility.
  */
 export function subscribeToMatch(
   matchPdaStr: string,
@@ -190,36 +456,53 @@ export function subscribeToMatch(
   if (!conn) return;
 
   const matchPda = new PublicKey(matchPdaStr);
+  let lastShotIndex = -1;
+  let lastPhase = -1;
 
+  const processUpdate = async () => {
+    try {
+      const accountInfo = await conn.getAccountInfo(matchPda);
+      if (!accountInfo?.data) return;
+
+      const info = deserializeMatchConfig(accountInfo.data as Buffer);
+
+      // Only broadcast if state actually changed
+      if (info.currentShotIndex === lastShotIndex && info.phase === lastPhase) return;
+      lastShotIndex = info.currentShotIndex;
+      lastPhase = info.phase;
+
+      const roundResults = await fetchRoundResults(conn, matchPda, info.currentShotIndex, info.playerA, info.playerB);
+      const gameState = matchInfoToGameState(info, playerA, playerB, roundResults);
+
+      console.log(`[Solana] Match update: phase=${info.phase} shot=${info.currentShotIndex}`);
+
+      onUpdate({
+        matchId: matchPdaStr,
+        matchPda: matchPdaStr,
+        gameState,
+      });
+    } catch (err) {
+      // Account might not be ready yet on ER
+    }
+  };
+
+  // Try WebSocket subscription
   const subId = conn.onAccountChange(
     matchPda,
-    async (accountInfo) => {
-      try {
-        const info = deserializeMatchConfig(accountInfo.data as Buffer);
-
-        // Fetch all RoundResult accounts up to currentShotIndex
-        const roundResults = await fetchRoundResults(conn, matchPda, info.currentShotIndex, info.playerA, info.playerB);
-
-        const gameState = matchInfoToGameState(info, playerA, playerB, roundResults);
-
-        onUpdate({
-          matchId: matchPdaStr,
-          matchPda: matchPdaStr,
-          gameState,
-        });
-      } catch (err) {
-        console.error(`[Solana] Failed to deserialize MatchConfig:`, err);
-      }
-    },
+    async () => { await processUpdate(); },
     'confirmed',
   );
-
   subscriptions.set(matchPdaStr, subId);
-  console.log(`[Solana] Subscribed to match: ${matchPdaStr.slice(0, 12)}...`);
+
+  // Also poll every 2s as fallback (ER WebSocket may not work)
+  const interval = setInterval(processUpdate, 2000);
+  pollingIntervals.set(matchPdaStr, interval);
+
+  console.log(`[Solana] Subscribed to match: ${matchPdaStr.slice(0, 12)}... (ws + polling)`);
 }
 
 /**
- * Fetch all RoundResult accounts for a match.
+ * Fetch round results from the single RoundResults account.
  */
 async function fetchRoundResults(
   conn: Connection,
@@ -230,33 +513,31 @@ async function fetchRoundResults(
 ): Promise<RoundResultInfo[]> {
   const results: RoundResultInfo[] = [];
 
-  // Fetch results for all completed rounds (0..currentShotIndex-1)
-  // If phase is choosingTarget and index > 0, the previous round was resolved
-  for (let i = 0; i < currentShotIndex; i++) {
-    try {
-      const [resultPda] = getRoundResultPda(matchPda, i);
-      const accountInfo = await conn.getAccountInfo(resultPda);
-      if (accountInfo?.data) {
-        const result = deserializeRoundResult(accountInfo.data as Buffer);
-        results.push(result);
-      }
-    } catch {
-      // Result may not exist yet
-    }
-  }
-
-  // Also try fetching the result at currentShotIndex (just resolved)
   try {
-    const [resultPda] = getRoundResultPda(matchPda, currentShotIndex);
-    const accountInfo = await conn.getAccountInfo(resultPda);
-    if (accountInfo?.data) {
-      const result = deserializeRoundResult(accountInfo.data as Buffer);
-      // Only add if not already included
-      if (!results.some(r => r.shotIndex === result.shotIndex)) {
-        results.push(result);
-      }
+    const [roundResultsPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('results'), matchPda.toBuffer()],
+      PROGRAM_ID,
+    );
+    const accountInfo = await conn.getAccountInfo(roundResultsPda);
+    if (!accountInfo?.data) return results;
+
+    const data = accountInfo.data as Buffer;
+    // Skip 8-byte discriminator, then read entries (67 bytes each)
+    const count = data[8 + 469]; // count field after data array
+    const ENTRY_SIZE = 67;
+
+    for (let i = 0; i < count && i < 7; i++) {
+      const offset = 8 + i * ENTRY_SIZE;
+      const shooter = new PublicKey(data.subarray(offset, offset + 32)).toBase58();
+      const finalTarget = new PublicKey(data.subarray(offset + 32, offset + 64)).toBase58();
+      const killed = data[offset + 64] === 1;
+      const cardPlayed = data[offset + 65];
+      const shotIndex = data[offset + 66];
+      results.push({ shooter, finalTarget, killed, cardPlayed, shotIndex });
     }
-  } catch { /* may not exist */ }
+  } catch {
+    // Account may not be available yet
+  }
 
   return results;
 }
@@ -294,6 +575,12 @@ export function unsubscribeFromMatch(matchPdaStr: string): void {
   if (subId !== undefined) {
     conn.removeAccountChangeListener(subId);
     subscriptions.delete(matchPdaStr);
+  }
+
+  const interval = pollingIntervals.get(matchPdaStr);
+  if (interval) {
+    clearInterval(interval);
+    pollingIntervals.delete(matchPdaStr);
   }
 }
 

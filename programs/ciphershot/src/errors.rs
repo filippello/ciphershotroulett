@@ -18,4 +18,6 @@ pub enum CipherShotError {
     GameOver,
     #[msg("Chamber exhausted")]
     ChamberExhausted,
+    #[msg("Insufficient delegation accounts in remaining_accounts")]
+    InsufficientDelegationAccounts,
 }

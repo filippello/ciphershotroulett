@@ -107,3 +107,34 @@ pub struct RoundResult {
 impl RoundResult {
     pub const SIZE: usize = 8 + 32 + 32 + 1 + 1 + 1 + 1;
 }
+
+/// All round results in a single account (avoids per-round init on ER).
+/// PDA: ["results", match_config]
+#[account]
+pub struct RoundResults {
+    /// 7 slots: [shooter(32) + final_target(32) + killed(1) + card_played(1) + shot_index(1)] × 7
+    pub data: [u8; 469],  // 67 bytes × 7
+    pub count: u8,        // number of resolved rounds
+    pub bump: u8,
+}
+
+impl Default for RoundResults {
+    fn default() -> Self {
+        Self { data: [0u8; 469], count: 0, bump: 0 }
+    }
+}
+
+impl RoundResults {
+    pub const SIZE: usize = 8 + 469 + 1 + 1;
+    pub const ENTRY_SIZE: usize = 67; // 32+32+1+1+1
+
+    pub fn write_result(&mut self, index: usize, shooter: Pubkey, final_target: Pubkey, killed: bool, card_played: u8, shot_index: u8) {
+        let offset = index * Self::ENTRY_SIZE;
+        self.data[offset..offset+32].copy_from_slice(&shooter.to_bytes());
+        self.data[offset+32..offset+64].copy_from_slice(&final_target.to_bytes());
+        self.data[offset+64] = killed as u8;
+        self.data[offset+65] = card_played;
+        self.data[offset+66] = shot_index;
+        self.count = (index + 1) as u8;
+    }
+}

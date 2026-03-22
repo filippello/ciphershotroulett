@@ -23,24 +23,20 @@ pub struct PlayCard<'info> {
     #[account(mut)]
     pub pending_action: Account<'info, PendingAction>,
 
-    /// The RoundResult account for this shot (initialized here)
+    /// All round results (pre-created in create_match)
     #[account(
-        init,
-        payer = responder,
-        space = RoundResult::SIZE,
-        seeds = [b"result", match_config.key().as_ref(), &[match_config.current_shot_index]],
+        mut,
+        seeds = [b"results", match_config.key().as_ref()],
         bump,
     )]
-    pub round_result: Account<'info, RoundResult>,
-
-    pub system_program: Program<'info, System>,
+    pub round_results: Account<'info, RoundResults>,
 }
 
 pub fn handler(ctx: Context<PlayCard>, card: u8) -> Result<()> {
     let match_config = &mut ctx.accounts.match_config;
     let chamber = &ctx.accounts.chamber;
     let responder_cards = &mut ctx.accounts.responder_cards;
-    let round_result = &mut ctx.accounts.round_result;
+    let round_results = &mut ctx.accounts.round_results;
     let responder_key = ctx.accounts.responder.key();
 
     require!(match_config.phase == Phase::RespondingCard, CipherShotError::InvalidPhase);
@@ -101,13 +97,15 @@ pub fn handler(ctx: Context<PlayCard>, card: u8) -> Result<()> {
 
     let killed = is_live;
 
-    // Write RoundResult
-    round_result.shooter = shooter;
-    round_result.final_target = final_target_pubkey;
-    round_result.killed = killed;
-    round_result.card_played = card;
-    round_result.shot_index = match_config.current_shot_index;
-    round_result.bump = ctx.bumps.round_result;
+    // Write round result into the combined account
+    round_results.write_result(
+        shot_index,
+        shooter,
+        final_target_pubkey,
+        killed,
+        card,
+        match_config.current_shot_index,
+    );
 
     // Update match state
     if killed {
